@@ -2,7 +2,8 @@ const express = require("express");
 const router = express.Router();
 
 const verifyFirebaseToken = require("../middleware/authMiddleware");
-const { db } = require("../config/firebase");
+
+const { db, admin } = require("../config/firebase");
 
 router.post("/create-profile", verifyFirebaseToken, async (req, res) => {
   try {
@@ -89,6 +90,269 @@ router.get("/search", verifyFirebaseToken, async (req, res) => {
   }
 });
 
+router.post("/follow-request/:targetUid", verifyFirebaseToken, async (req, res) => {
+  try {
+    const senderUid = req.user.uid;
+    const targetUid = req.params.targetUid;
+
+    if (senderUid === targetUid) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot follow yourself",
+      });
+    }
+
+    const senderDoc = await db.collection("users").doc(senderUid).get();
+    const targetDoc = await db.collection("users").doc(targetUid).get();
+
+    if (!senderDoc.exists || !targetDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const sender = senderDoc.data();
+    const target = targetDoc.data();
+
+    if ((target.followers || []).includes(senderUid)) {
+      return res.status(400).json({
+        success: false,
+        message: "Already following this user",
+      });
+    }
+
+    const oldRequest = await db
+      .collection("followRequests")
+      .where("senderUid", "==", senderUid)
+      .where("targetUid", "==", targetUid)
+      .where("status", "==", "pending")
+      .get();
+
+    if (!oldRequest.empty) {
+      return res.status(400).json({
+        success: false,
+        message: "Follow request already sent",
+      });
+    }
+
+    const requestRef = await db.collection("followRequests").add({
+      senderUid,
+      targetUid,
+      senderUsername: sender.username,
+      senderFullName: sender.fullName,
+      senderProfileImage: sender.profileImage || "",
+      targetUsername: target.username,
+      status: "pending",
+      type: "follow_request",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await db.collection("notifications").add({
+      receiverUid: targetUid,
+      senderUid,
+      type: "follow_request",
+      requestId: requestRef.id,
+      title: "New follow request",
+      message: `${sender.username} requested to follow you`,
+      isRead: false,
+      createdAt: new Date(),
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Follow request sent successfully",
+      requestId: requestRef.id,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.get("/follow-requests", verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+
+    const snapshot = await db
+      .collection("followRequests")
+      .where("targetUid", "==", uid)
+      .where("status", "==", "pending")
+      .get();
+
+    const requests = [];
+
+    snapshot.forEach((doc) => {
+      requests.push({
+        requestId: doc.id,
+        ...doc.data(),
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: requests.length,
+      requests,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.post("/follow-request/:requestId/accept", verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const requestId = req.params.requestId;
+
+    const requestRef = db.collection("followRequests").doc(requestId);
+    const requestDoc = await requestRef.get();
+
+    if (!requestDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    const request = requestDoc.data();
+
+    if (request.targetUid !== uid) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot accept this request",
+      });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: "Request already handled",
+      });
+    }
+
+    await db.runTransaction(async (transaction) => {
+      const senderRef = db.collection("users").doc(request.senderUid);
+      const targetRef = db.collection("users").doc(request.targetUid);
+
+      transaction.update(senderRef, {
+        following: admin.firestore.FieldValue.arrayUnion(request.targetUid),
+        updatedAt: new Date(),
+      });
+
+      transaction.update(targetRef, {
+        followers: admin.firestore.FieldValue.arrayUnion(request.senderUid),
+        updatedAt: new Date(),
+      });
+
+      transaction.update(requestRef, {
+        status: "accepted",
+        updatedAt: new Date(),
+      });
+    });
+
+    await db.collection("notifications").add({
+      receiverUid: request.senderUid,
+      senderUid: request.targetUid,
+      type: "follow_accept",
+      title: "Follow request accepted",
+      message: `${request.targetUsername} accepted your follow request`,
+      isRead: false,
+      createdAt: new Date(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Follow request accepted successfully",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+
+router.post("/follow-request/:requestId/reject", verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const requestId = req.params.requestId;
+
+    const requestRef = db.collection("followRequests").doc(requestId);
+    const requestDoc = await requestRef.get();
+
+    if (!requestDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    const request = requestDoc.data();
+
+    if (request.targetUid !== uid) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot reject this request",
+      });
+    }
+
+    await requestRef.update({
+      status: "rejected",
+      updatedAt: new Date(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Follow request rejected",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+
+router.get("/notifications", verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+
+    const snapshot = await db
+      .collection("notifications")
+      .where("receiverUid", "==", uid)
+      .orderBy("createdAt", "desc")
+      .limit(50)
+      .get();
+
+    const notifications = [];
+
+    snapshot.forEach((doc) => {
+      notifications.push({
+        notificationId: doc.id,
+        ...doc.data(),
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: notifications.length,
+      notifications,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
 
 router.post("/request/:targetUid", verifyFirebaseToken, async (req, res) => {
   try {
