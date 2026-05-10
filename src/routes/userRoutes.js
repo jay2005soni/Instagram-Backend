@@ -290,8 +290,6 @@ router.post("/request/:requestId/reject", verifyFirebaseToken, async (req, res) 
     });
   }
 });
-
-// GET MY FULL PROFILE
 router.get("/profile", verifyFirebaseToken, async (req, res) => {
   try {
     const uid = req.user.uid;
@@ -316,9 +314,21 @@ router.get("/profile", verifyFirebaseToken, async (req, res) => {
     const posts = [];
 
     postsSnapshot.forEach((doc) => {
+      const data = doc.data();
+
       posts.push({
         postId: doc.id,
-        ...doc.data(),
+        userId: data.userId,
+        username: data.username,
+        fullName: data.fullName,
+        caption: data.caption || "",
+        imageUrl: data.imageUrl || "",
+        imagePublicId: data.imagePublicId || "",
+        likes: data.likes || [],
+        likesCount: data.likesCount || 0,
+        commentsCount: data.commentsCount || 0,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt,
       });
     });
 
@@ -336,10 +346,8 @@ router.get("/profile", verifyFirebaseToken, async (req, res) => {
         followersCount: user.followers?.length || 0,
         followingCount: user.following?.length || 0,
         postsCount: posts.length,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt,
       },
-      posts,
+      posts: posts,
     });
   } catch (error) {
     return res.status(500).json({
