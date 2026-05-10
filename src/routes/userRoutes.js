@@ -290,6 +290,64 @@ router.post("/request/:requestId/reject", verifyFirebaseToken, async (req, res) 
     });
   }
 });
+
+// GET MY FULL PROFILE
+router.get("/profile", verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+
+    const userDoc = await db.collection("users").doc(uid).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found",
+      });
+    }
+
+    const user = userDoc.data();
+
+    const postsSnapshot = await db
+      .collection("posts")
+      .where("userId", "==", uid)
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const posts = [];
+
+    postsSnapshot.forEach((doc) => {
+      posts.push({
+        postId: doc.id,
+        ...doc.data(),
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      profile: {
+        uid: user.uid,
+        username: user.username,
+        fullName: user.fullName,
+        email: user.email,
+        bio: user.bio || "",
+        profileImage: user.profileImage || "",
+        followers: user.followers || [],
+        following: user.following || [],
+        followersCount: user.followers?.length || 0,
+        followingCount: user.following?.length || 0,
+        postsCount: posts.length,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+      posts,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
 router.get("/me", verifyFirebaseToken, async (req, res) => {
   try {
     const uid = req.user.uid;
