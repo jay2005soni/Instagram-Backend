@@ -163,28 +163,47 @@ router.get("/user/:uid", verifyFirebaseToken, async (req, res) => {
   }
 });
 
-// HOME FEED
+const shufflePosts = (posts) => {
+  for (let i = posts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [posts[i], posts[j]] = [posts[j], posts[i]];
+  }
+
+  return posts;
+};
+
+// HOME FEED - RANDOM SUGGESTED POSTS EXCLUDING OWN POSTS
 router.get("/feed", verifyFirebaseToken, async (req, res) => {
   try {
+    const uid = req.user.uid;
+    const requestedLimit = parseInt(req.query.limit, 10) || 20;
+    const limit = Math.min(Math.max(requestedLimit, 1), 50);
+
     const snapshot = await db
       .collection("posts")
       .orderBy("createdAt", "desc")
-      .limit(50)
+      .limit(100)
       .get();
 
     const posts = [];
 
     snapshot.forEach((doc) => {
-      posts.push({
-        postId: doc.id,
-        ...doc.data(),
-      });
+      const post = doc.data();
+
+      if (post.userId !== uid) {
+        posts.push({
+          postId: doc.id,
+          ...post,
+        });
+      }
     });
+
+    const suggestedPosts = shufflePosts(posts).slice(0, limit);
 
     return res.status(200).json({
       success: true,
-      count: posts.length,
-      posts,
+      count: suggestedPosts.length,
+      posts: suggestedPosts,
     });
   } catch (error) {
     return res.status(500).json({
